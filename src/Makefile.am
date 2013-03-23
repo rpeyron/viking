@@ -125,7 +125,8 @@ libviking_a_SOURCES = \
 	print-preview.c print-preview.h \
 	print.c print.h \
 	viklayer_defaults.c viklayer_defaults.h \
-	preferences.c preferences.h
+	preferences.c preferences.h \
+    gtk_datetime.c gtk_datetime.h
 
 if BING
 libviking_a_SOURCES += \

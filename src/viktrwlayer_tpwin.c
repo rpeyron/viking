@@ -34,11 +34,14 @@
 #include "vikwaypoint.h"
 #include "dialog.h"
 #include "globals.h"
+#include "gtk_datetime.h"
 
 struct _VikTrwLayerTpwin {
   GtkDialog parent;
   GtkSpinButton *lat, *lon, *alt;
   GtkLabel *track_name, *ts, *localtime, *diff_dist, *diff_time, *diff_speed, *hdop, *vdop, *pdop, *sat;
+  GtkDateTime *datetime;
+  GtkHScale *ts_slide;
   // Previously these buttons were in a glist, however I think the ordering behaviour is implicit
   //  thus control manually to ensure operating on the correct button
   GtkWidget *button_close;
@@ -113,6 +116,19 @@ static void tpwin_sync_alt_to_tp ( VikTrwLayerTpwin *tpwin )
   }
 }
 
+void vik_trw_layer_tpwin_set_tp_ts (VikTrwLayerTpwin *tpwin, VikTrackpoint *tp);
+
+static void tpwin_sync_ts_to_tp ( VikTrwLayerTpwin *tpwin )
+{
+  if ( tpwin->cur_tp && (!tpwin->sync_to_tp_block) ) {
+	  if (tpwin->cur_tp->timestamp != gtk_datetime_get_timestamp(tpwin->datetime))
+	  {
+		  tpwin->cur_tp->timestamp = gtk_datetime_get_timestamp(tpwin->datetime);
+		  vik_trw_layer_tpwin_set_tp_ts(tpwin, tpwin->cur_tp);
+	  }
+  }
+}
+
 VikTrwLayerTpwin *vik_trw_layer_tpwin_new ( GtkWindow *parent )
 {
   static gchar *left_label_texts[] = { N_("<b>Part of Track:</b>"),
@@ -130,9 +146,14 @@ VikTrwLayerTpwin *vik_trw_layer_tpwin_new ( GtkWindow *parent )
 					N_("<b>SAT/FIX:</b>")
 					};
 
+  static gchar *timestamp_label_texts[] = { N_("<b>Edit time:</b>") /*,
+                                        N_("<b>Time slider:</b>") */
+					};
+
   VikTrwLayerTpwin *tpwin = VIK_TRW_LAYER_TPWIN ( g_object_new ( VIK_TRW_LAYER_TPWIN_TYPE, NULL ) );
   GtkWidget *main_hbox, *left_vbox, *right_vbox;
   GtkWidget *diff_left_vbox, *diff_right_vbox;
+  GtkWidget *timestamp_hbox, *timestamp_left_vbox, *timestamp_right_vbox;
   
 
   gtk_window_set_transient_for ( GTK_WINDOW(tpwin), parent );
@@ -215,6 +236,21 @@ VikTrwLayerTpwin *vik_trw_layer_tpwin_new ( GtkWindow *parent )
 
   gtk_box_pack_start ( GTK_BOX(GTK_DIALOG(tpwin)->vbox), main_hbox, FALSE, FALSE, 0 );
 
+
+  timestamp_left_vbox = a_dialog_create_label_vbox ( timestamp_label_texts, sizeof(timestamp_label_texts) / sizeof(timestamp_label_texts[0]) );
+  timestamp_right_vbox = gtk_vbox_new ( FALSE, 3 );
+  tpwin->datetime = GTK_DATETIME(gtk_datetime_new(NULL));
+  g_signal_connect_swapped ( G_OBJECT(tpwin->datetime), "gtk_datetime_changed", G_CALLBACK(tpwin_sync_ts_to_tp), tpwin );
+  gtk_box_pack_start ( GTK_BOX(timestamp_right_vbox), GTK_WIDGET(tpwin->datetime), FALSE, FALSE, 5 );
+/*  tpwin->ts_slide = GTK_HSCALE(gtk_hscale_new_with_range(0,100,1));
+  gtk_range_set_value(GTK_RANGE(tpwin->ts_slide), 50);
+  gtk_box_pack_start ( GTK_BOX(timestamp_right_vbox), GTK_WIDGET(tpwin->ts_slide), FALSE, FALSE, 5 );*/
+  timestamp_hbox = gtk_hbox_new( FALSE, 3 );
+  gtk_box_pack_start ( GTK_BOX(timestamp_hbox), timestamp_left_vbox, TRUE, TRUE, 0 );
+  gtk_box_pack_start ( GTK_BOX(timestamp_hbox), timestamp_right_vbox, TRUE, TRUE, 0 );
+
+  gtk_box_pack_start ( GTK_BOX(GTK_DIALOG(tpwin)->vbox), timestamp_hbox, FALSE, FALSE, 0 );
+
   tpwin->cur_tp = NULL;
 
   return tpwin;
@@ -244,6 +280,86 @@ void vik_trw_layer_tpwin_set_empty ( VikTrwLayerTpwin *tpwin )
   gtk_label_set_text ( tpwin->hdop, NULL );
   gtk_label_set_text ( tpwin->pdop, NULL );
   gtk_label_set_text ( tpwin->sat, NULL );
+
+  gtk_widget_set_sensitive ( GTK_WIDGET(tpwin->datetime), FALSE );
+  gtk_widget_set_sensitive ( GTK_WIDGET(tpwin->ts_slide), FALSE );
+
+}
+
+void vik_trw_layer_tpwin_set_tp_ts (VikTrwLayerTpwin *tpwin, VikTrackpoint *tp)
+{
+	  static char tmp_str[25];
+
+	  if ( tp->has_timestamp )
+	  {
+	    g_snprintf ( tmp_str, sizeof(tmp_str), "%ld", tp->timestamp );
+	    gtk_label_set_text ( tpwin->ts, tmp_str );
+	    g_snprintf ( tmp_str, MIN(25,sizeof(tmp_str)), "%s", ctime(&(tp->timestamp)) );
+	    /* max. len of 25 will snip off newline, which is good since it messes stuff up */
+	    gtk_label_set_text ( tpwin->localtime, tmp_str );
+	    gtk_widget_set_sensitive ( GTK_WIDGET(tpwin->datetime), TRUE );
+	    gtk_datetime_set_timestamp( tpwin->datetime, &(tp->timestamp) );
+	    gtk_widget_set_sensitive ( GTK_WIDGET(tpwin->ts_slide), TRUE );
+	  }
+	  else
+	  {
+	    gtk_label_set_text (tpwin->ts, NULL );
+	    gtk_label_set_text (tpwin->localtime, NULL );
+	    gtk_widget_set_sensitive ( GTK_WIDGET(tpwin->datetime), FALSE );
+	    gtk_widget_set_sensitive ( GTK_WIDGET(tpwin->ts_slide), FALSE );
+	  }
+
+	  vik_units_distance_t dist_units = a_vik_get_units_distance ();
+	  if ( tpwin->cur_tp )
+	  {
+	    switch (dist_units) {
+	    case VIK_UNITS_DISTANCE_KILOMETRES:
+	      g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f m", vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)));
+	      break;
+	    case VIK_UNITS_DISTANCE_MILES:
+	      g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f yards", vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord))*1.0936133);
+	      break;
+	    default:
+	      g_critical("Houston, we've had a problem. distance=%d", dist_units);
+	    }
+
+	    gtk_label_set_text ( tpwin->diff_dist, tmp_str );
+	    if ( tp->has_timestamp && tpwin->cur_tp->has_timestamp )
+	    {
+	      g_snprintf ( tmp_str, sizeof(tmp_str), "%ld s", tp->timestamp - tpwin->cur_tp->timestamp);
+	      gtk_label_set_text ( tpwin->diff_time, tmp_str );
+	      if ( tp->timestamp == tpwin->cur_tp->timestamp )
+	        gtk_label_set_text ( tpwin->diff_speed, "--" );
+	      else
+	      {
+		vik_units_speed_t speed_units = a_vik_get_units_speed ();
+		switch (speed_units) {
+		case VIK_UNITS_SPEED_KILOMETRES_PER_HOUR:
+		  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f km/h", VIK_MPS_TO_KPH(vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / (ABS(tp->timestamp - tpwin->cur_tp->timestamp))) );
+		  break;
+		case VIK_UNITS_SPEED_MILES_PER_HOUR:
+		  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f mph", VIK_MPS_TO_MPH(vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / (ABS(tp->timestamp - tpwin->cur_tp->timestamp))) );
+		  break;
+		case VIK_UNITS_SPEED_METRES_PER_SECOND:
+		  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f m/s", vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / ABS(tp->timestamp - tpwin->cur_tp->timestamp) );
+		  break;
+		case VIK_UNITS_SPEED_KNOTS:
+		  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f knots", VIK_MPS_TO_KNOTS(vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / (ABS(tp->timestamp - tpwin->cur_tp->timestamp))) );
+		  break;
+		default:
+		  g_snprintf ( tmp_str, sizeof(tmp_str), "--" );
+		  g_critical("Houston, we've had a problem. speed=%d", speed_units);
+		}
+	        gtk_label_set_text ( tpwin->diff_speed, tmp_str );
+	      }
+	    }
+	    else
+	    {
+	      gtk_label_set_text ( tpwin->diff_time, NULL );
+	      gtk_label_set_text ( tpwin->diff_speed, NULL );
+	    }
+	  }
+
 }
 
 void vik_trw_layer_tpwin_set_tp ( VikTrwLayerTpwin *tpwin, GList *tpl, gchar *track_name )
@@ -289,71 +405,9 @@ void vik_trw_layer_tpwin_set_tp ( VikTrwLayerTpwin *tpwin, GList *tpl, gchar *tr
 
   tpwin->sync_to_tp_block = FALSE; /* don't update whlie setting data. */
 
-
-  if ( tp->has_timestamp )
-  {
-    g_snprintf ( tmp_str, sizeof(tmp_str), "%ld", tp->timestamp );
-    gtk_label_set_text ( tpwin->ts, tmp_str );
-    g_snprintf ( tmp_str, MIN(25,sizeof(tmp_str)), "%s", ctime(&(tp->timestamp)) );
-    /* max. len of 25 will snip off newline, which is good since it messes stuff up */
-    gtk_label_set_text ( tpwin->localtime, tmp_str );
-  }
-  else
-  {
-    gtk_label_set_text (tpwin->ts, NULL );
-    gtk_label_set_text (tpwin->localtime, NULL );
-  }
+  vik_trw_layer_tpwin_set_tp_ts(tpwin, tp);
 
   vik_units_distance_t dist_units = a_vik_get_units_distance ();
-  if ( tpwin->cur_tp )
-  {
-    switch (dist_units) {
-    case VIK_UNITS_DISTANCE_KILOMETRES:
-      g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f m", vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)));
-      break;
-    case VIK_UNITS_DISTANCE_MILES:
-      g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f yards", vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord))*1.0936133);
-      break;
-    default:
-      g_critical("Houston, we've had a problem. distance=%d", dist_units);
-    }
-
-    gtk_label_set_text ( tpwin->diff_dist, tmp_str );
-    if ( tp->has_timestamp && tpwin->cur_tp->has_timestamp )
-    {
-      g_snprintf ( tmp_str, sizeof(tmp_str), "%ld s", tp->timestamp - tpwin->cur_tp->timestamp);
-      gtk_label_set_text ( tpwin->diff_time, tmp_str );
-      if ( tp->timestamp == tpwin->cur_tp->timestamp )
-        gtk_label_set_text ( tpwin->diff_speed, "--" );
-      else
-      {
-	vik_units_speed_t speed_units = a_vik_get_units_speed ();
-	switch (speed_units) {
-	case VIK_UNITS_SPEED_KILOMETRES_PER_HOUR:
-	  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f km/h", VIK_MPS_TO_KPH(vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / (ABS(tp->timestamp - tpwin->cur_tp->timestamp))) );
-	  break;
-	case VIK_UNITS_SPEED_MILES_PER_HOUR:
-	  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f mph", VIK_MPS_TO_MPH(vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / (ABS(tp->timestamp - tpwin->cur_tp->timestamp))) );
-	  break;
-	case VIK_UNITS_SPEED_METRES_PER_SECOND:
-	  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f m/s", vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / ABS(tp->timestamp - tpwin->cur_tp->timestamp) );
-	  break;
-	case VIK_UNITS_SPEED_KNOTS:
-	  g_snprintf ( tmp_str, sizeof(tmp_str), "%.2f knots", VIK_MPS_TO_KNOTS(vik_coord_diff(&(tp->coord), &(tpwin->cur_tp->coord)) / (ABS(tp->timestamp - tpwin->cur_tp->timestamp))) );
-	  break;
-	default:
-	  g_snprintf ( tmp_str, sizeof(tmp_str), "--" );
-	  g_critical("Houston, we've had a problem. speed=%d", speed_units);
-	}
-        gtk_label_set_text ( tpwin->diff_speed, tmp_str );
-      }
-    }
-    else
-    {
-      gtk_label_set_text ( tpwin->diff_time, NULL );
-      gtk_label_set_text ( tpwin->diff_speed, NULL );
-    }
-  }
 
   switch (dist_units) {
   case VIK_UNITS_DISTANCE_KILOMETRES:
